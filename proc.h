@@ -13,9 +13,14 @@ typedef struct {
     int   uid;
     long  rss;
     int   tty;
-    long  utime;      /* temps CPU utilisateur  */
-    long  stime;      /* temps CPU système      */
-    long  starttime;  /* démarrage du processus */
+    long  utime;
+    long  stime;
+    long  starttime;
+    int   pgrp;       /* groupe du processus   */
+    int   session;    /* ID de session         */
+    long  vsize;      /* mémoire virtuelle     */
+    int   priority;   /* priorité              */
+    int   nice;       /* valeur nice           */
 } ProcessInfo;
 
 #endif
