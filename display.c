@@ -34,8 +34,8 @@ void afficher_en_tete(OptsAffichage *opts) {
         printf("%-10s %-8s %-6s %-9s %-6s %-6s %-8s %-6s %-5s %s\n",
                "PID","TTY","STAT","TIME","MAJFL","TRS","DRS","RSS","%MEM","COMMAND");
     } else if (opts->opt_F) {
-        printf("%-10s %-10s %-6s %-6s %-6s %-6s %-4s %-6s %-8s %-9s %s\n",
-               "UID","PID","PPID","C","SZ","RSS","PSR","STIME","TTY","TIME","CMD");
+        printf("%-16s %-8s %-6s %-2s %-8s %-8s %-4s %-6s %-8s %-9s %s\n",
+                "UID","PID","PPID","C","SZ","RSS","PSR","STIME","TTY","TIME","CMD");
     } else if (opts->opt_f) {
         printf("%-10s %-6s %-6s %-2s %-6s %-8s %-9s %s\n",
                "UID","PID","PPID","C","STIME","TTY","TIME","CMD");
@@ -70,9 +70,9 @@ void afficher_ligne(Processus *p, OptsAffichage *opts, const char *prefixe) {
         struct passwd *pw = getpwuid(p->uid);
         char *user = (pw && pw->pw_name) ? pw->pw_name : "?";
         long sz = p->rss / 4;
-        printf("%-10s %-10d %-6d %-6d %-6ld %-6ld %-4d %-6s %-8s %-9s %s%s\n",
-               user, p->pid, p->ppid, 0, sz, p->rss, 0,
-               "?", tty, time_str, prefixe, cmd);
+        printf("%-16s %-8d %-6d %-2d %-8ld %-8ld %-4d %-6s %-8s %-9s %s%s\n",
+                user, p->pid, p->ppid, 0, sz, p->rss, 0,
+                "?", tty, time_str, prefixe, cmd);
 
     } else if (opts->opt_f) {
         struct passwd *pw = getpwuid(p->uid);
