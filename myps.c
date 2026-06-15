@@ -252,3 +252,58 @@ int parse_ps_args(int argc, char **argv,
     return 1;
 }
 
+//  Fonction principale
+
+int main(int argc, char **argv) {
+    int opt_a = 0, opt_u = 0, opt_x = 0, pid_filtre = 0;
+
+    /* Analyse des options (sans getopt) */
+    if (!parse_ps_args(argc, argv, &opt_a, &opt_u, &opt_x, &pid_filtre))
+        return 1;
+
+    DIR *proc_dir = opendir("/proc");
+    if (!proc_dir) {
+        perror("opendir /proc");
+        return 1;
+    }
+
+    Processus *procs = NULL;
+    int nb_procs = 0, capacite = 0;
+    int uid_courant = getuid();
+    struct dirent *ent;
+
+    while ((ent = readdir(proc_dir)) != NULL) {
+        if (!est_un_nombre(ent->d_name)) continue;
+        int pid = atoi(ent->d_name);
+        Processus p;
+        if (!lire_stat(pid, &p)) continue;
+        p.uid = lire_uid(pid);
+        lire_cmdline(pid, p.cmdline, sizeof(p.cmdline));
+
+        if (!doit_afficher(&p, opt_a, opt_x, pid_filtre, uid_courant))
+            continue;
+
+        if (nb_procs >= capacite) {
+            capacite = (capacite == 0) ? 64 : capacite * 2;
+            Processus *new = realloc(procs, capacite * sizeof(Processus));
+            if (!new) {
+                perror("realloc");
+                free(procs);
+                closedir(proc_dir);
+                return 1;
+            }
+            procs = new;
+        }
+        procs[nb_procs++] = p;
+    }
+    closedir(proc_dir);
+
+    qsort(procs, nb_procs, sizeof(Processus), comparer_pid);
+    afficher_en_tete(opt_u);
+    for (int i = 0; i < nb_procs; i++)
+        afficher_ligne(&procs[i], opt_u);
+
+    free(procs);
+    return 0;
+
+}
