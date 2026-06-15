@@ -1,13 +1,18 @@
 /**
  * Options :
- *   -a : tous les utilisateurs
- *   -u : afficher USER
- *   -x : inclure processus sans terminal
- *   -e : équivalent à -a -x
- *   -f : affichage complet
- *   -c : afficher le nom de commande au lieu de cmdline
- *   -H : affichage hiérarchique (arbre des processus)
- *   -p PID : filtrer un PID
+ * -a : tous les utilisateurs
+ * -u : afficher USER
+ * -x : inclure processus sans terminal
+ * -e : équivalent à -a -x
+ * -f : affichage complet
+ * -c : afficher le nom de commande au lieu de cmdline
+ * -H : affichage hiérarchique (arbre des processus)
+ * -p PID : filtrer un PID
+ * -t : filtrer par terminal
+ * -n : filtrer par nom de processus
+ * -Z : afficher le contexte de sécurité SELinux
+ * -s : afficher les colonnes PGID et SID
+ * --sort : trier selon un critère (pid, ppid, cpu, rss, nom)
  */
 
 #include <stdio.h>
@@ -34,7 +39,12 @@ typedef struct {
     int pgid;
     int sid;
     double total_cpu_sec;
+    // contexte de securite pour l'option -Z
+    char scontext[256];
 } Processus;
+
+// variable globale simple pour gérer le critère de tri de l'option --sort
+char *critere_tri_global = NULL;
 
 /* Vérifie qu'une chaîne ne contient que des chiffres */
 int est_un_nombre(const char *s) {
@@ -43,6 +53,26 @@ int est_un_nombre(const char *s) {
         if (!isdigit(*s++)) return 0;
     }
     return 1;
+}
+
+// Lecture du contexte SELinux pour l'option -Z 
+void lire_contexte_Z(int pid, char *buf, size_t taille) {
+    char chemin[256];
+    snprintf(chemin, sizeof(chemin), "/proc/%d/attr/current", pid);
+    FILE *f = fopen(chemin, "r");
+    if (!f) {
+        snprintf(buf, taille, "unconfined");
+        return;
+    }
+    if (fgets(buf, taille, f)) {
+        size_t len = strlen(buf);
+        if (len > 0 && buf[len - 1] == '\n') {
+            buf[len - 1] = '\0';
+        }
+    } else {
+        snprintf(buf, taille, "unknown");
+    }
+    fclose(f);
 }
 
 /* Lecture de /proc/PID/stat */
@@ -109,7 +139,7 @@ int lire_stat(int pid, Processus *proc) {
     return 1;
 }
 
-/* Lecture UID */
+// Lecture UID 
 int lire_uid(int pid) {
     char chemin[256];
     snprintf(chemin, sizeof(chemin), "/proc/%d/status", pid);
@@ -131,7 +161,7 @@ int lire_uid(int pid) {
     return uid;
 }
 
-/* Lecture cmdline */
+// Lecture cmdline 
 void lire_cmdline(int pid, char *buf, size_t taille) {
     char chemin[256];
     snprintf(chemin, sizeof(chemin), "/proc/%d/cmdline", pid);
@@ -158,9 +188,9 @@ void lire_cmdline(int pid, char *buf, size_t taille) {
     buf[n] = '\0';
 }
 
-/* Filtrage */
+// Filtrage étendu avec options -t et -n 
 int doit_afficher(Processus *p, int opt_a, int opt_x,
-                  int pid_filtre, int uid_courant) {
+                  int pid_filtre, int uid_courant, char *tty_filtre, char *nom_filtre) {
 
     if (pid_filtre && p->pid != pid_filtre)
         return 0;
@@ -171,12 +201,35 @@ int doit_afficher(Processus *p, int opt_a, int opt_x,
     if (!opt_x && p->tty == 0)
         return 0;
 
+    // -t : si le filtre tty est actif et que le tty ne correspond pas
+    if (tty_filtre != NULL) {
+        if (p->tty == 0) return 0;
+    }
+
+    //  -n : si le filtre de nom est actif et que le nom ne correspond pas
+    if (nom_filtre != NULL) {
+        if (strstr(p->nom, nom_filtre) == NULL) return 0;
+    }
+
     return 1;
 }
 
-/* Tri par PID */
-int comparer_pid(const void *a, const void *b) {
-    return ((Processus *)a)->pid - ((Processus *)b)->pid;
+// Comparaison  pour l'option --sort (qsort)
+int comparer_processus(const void *a, const void *b) {
+    Processus *p1 = (Processus *)a;
+    Processus *p2 = (Processus *)b;
+
+    if (critere_tri_global != NULL) {
+        if (strcmp(critere_tri_global, "pid") == 0) return p1->pid - p2->pid;
+        if (strcmp(critere_tri_global, "ppid") == 0) return p1->ppid - p2->ppid;
+        if (strcmp(critere_tri_global, "rss") == 0) return p1->rss - p2->rss;
+        if (strcmp(critere_tri_global, "nom") == 0) return strcmp(p1->nom, p2->nom);
+        if (strcmp(critere_tri_global, "cpu") == 0) {
+            return (p1->cpu > p2->cpu) ? 1 : ((p1->cpu < p2->cpu) ? -1 : 0);
+        }
+    }
+    // tri par défaut par PID
+    return p1->pid - p2->pid;
 }
 
 /* Affichage arbre */
@@ -198,7 +251,12 @@ void afficher_arbre(Processus *procs, int nb, int parent, int niveau) {
     }
 }
 
-void afficher_entete(int opt_u, int opt_f) {
+//Modification de l'en-tête pour  options -Z et -s 
+void afficher_entete(int opt_u, int opt_f, int opt_Z, int opt_s) {
+
+    // affichage des pré-colonnes pour vos options
+    if (opt_Z) printf("%-25s ", "LABEL");
+    if (opt_s) printf("%-7s %-7s ", "PGID", "SID");
 
     if (opt_f) {
         printf("%-7s %-7s %-7s %-7s %-10s %-8s %-6s %s\n",
@@ -218,10 +276,13 @@ void afficher_entete(int opt_u, int opt_f) {
     }
 }
 
+// Modification des lignes pour  options -Z et -s 
 void afficher_ligne(Processus *p,
                     int opt_u,
                     int opt_f,
-                    int opt_c) {
+                    int opt_c,
+                    int opt_Z,
+                    int opt_s) {
 
     long mem_kb = p->rss * 4;
 
@@ -230,6 +291,10 @@ void afficher_ligne(Processus *p,
 
     const char *commande =
         opt_c ? p->nom : p->cmdline;
+
+    // affichage du contenu des options avant le reste
+    if (opt_Z) printf("%-25s ", p->scontext);
+    if (opt_s) printf("%-7d %-7d ", p->pgid, p->sid);
 
     if (opt_f) {
         printf("%-7d %-7d %-7d %-7d %-10s %-8ld %-5.1f %s\n",
@@ -256,24 +321,31 @@ void afficher_ligne(Processus *p,
     }
 }
 
-/* Analyse des options sans getopt */
+// Analyse complète avec  options intégrées 
 int parse_ps_args(int argc, char **argv,
-                  int *opt_a,
-                  int *opt_u,
-                  int *opt_x,
-                  int *opt_e,
-                  int *opt_f,
-                  int *opt_c,
-                  int *opt_H,
-                  int *pid_filtre) {
+                  int *opt_a, int *opt_u, int *opt_x,
+                  int *opt_e, int *opt_f, int *opt_c, int *opt_H,
+                  int *pid_filtre, int *opt_Z, int *opt_s, char **tty_filtre, char **nom_filtre, char **critere_tri) {
 
     *opt_a = *opt_u = *opt_x = 0;
     *opt_e = *opt_f = *opt_c = *opt_H = 0;
     *pid_filtre = 0;
+    *opt_Z = 0;
+    *opt_s = 0;
+    *tty_filtre = NULL;
+    *nom_filtre = NULL;
+    *critere_tri = NULL;
 
     for (int i = 1; i < argc; i++) {
 
         char *arg = argv[i];
+
+        // interception de votre option longue --sort
+        if (strncmp(arg, "--sort=", 7) == 0) {
+            *critere_tri = arg + 7;
+            critere_tri_global = arg + 7;
+            continue;
+        }
 
         if (arg[0] != '-') {
             fprintf(stderr, "Argument invalide : %s\n", arg);
@@ -282,8 +354,21 @@ int parse_ps_args(int argc, char **argv,
 
         if (strcmp(arg, "-p") == 0) {
             if (i + 1 >= argc) return 0;
-
             *pid_filtre = atoi(argv[++i]);
+            continue;
+        }
+
+        // votre option simple -t
+        if (strcmp(arg, "-t") == 0) {
+            if (i + 1 >= argc) return 0;
+            *tty_filtre = argv[++i];
+            continue;
+        }
+
+        // votre option simple -n
+        if (strcmp(arg, "-n") == 0) {
+            if (i + 1 >= argc) return 0;
+            *nom_filtre = argv[++i];
             continue;
         }
 
@@ -304,6 +389,10 @@ int parse_ps_args(int argc, char **argv,
                 case 'f': *opt_f = 1; break;
                 case 'c': *opt_c = 1; break;
                 case 'H': *opt_H = 1; break;
+                
+                // gestion de vos options courtes dans les blocs groupés
+                case 'Z': *opt_Z = 1; break;
+                case 's': *opt_s = 1; break;
 
                 default:
                     fprintf(stderr,
@@ -322,12 +411,17 @@ int main(int argc, char **argv) {
     int opt_a, opt_u, opt_x;
     int opt_e, opt_f, opt_c, opt_H;
     int pid_filtre;
+    int opt_Z = 0, opt_s = 0;
+    char *tty_filtre = NULL;
+    char *nom_filtre = NULL;
+    char *critere_tri = NULL;
 
+    // mise à jour de l'appel pour passer toutes les variables à la fonction
     if (!parse_ps_args(argc, argv,
                        &opt_a, &opt_u, &opt_x,
                        &opt_e, &opt_f, &opt_c,
-                       &opt_H,
-                       &pid_filtre))
+                       &opt_H, &pid_filtre,
+                       &opt_Z, &opt_s, &tty_filtre, &nom_filtre, &critere_tri))
         return 1;
 
     DIR *proc_dir = opendir("/proc");
@@ -362,11 +456,19 @@ int main(int argc, char **argv) {
                      p.cmdline,
                      sizeof(p.cmdline));
 
+        // appel de la fonction de lecture Z si l'option est cochée
+        if (opt_Z) {
+            lire_contexte_Z(pid, p.scontext, sizeof(p.scontext));
+        }
+
+        // mise à jour des paramètres de filtrage
         if (!doit_afficher(&p,
                            opt_a,
                            opt_x,
                            pid_filtre,
-                           uid_courant))
+                           uid_courant,
+                           tty_filtre,
+                           nom_filtre))
             continue;
 
         if (nb >= capacite) {
@@ -394,10 +496,11 @@ int main(int argc, char **argv) {
 
     closedir(proc_dir);
 
+    // qsort utilise maintenant  fonction personnalisée de tri multi-critères
     qsort(procs,
           nb,
           sizeof(Processus),
-          comparer_pid);
+          comparer_processus);
 
     if (opt_H) {
 
@@ -411,14 +514,19 @@ int main(int argc, char **argv) {
     }
     else {
 
+        // mise à jour de l'affichage pour inclure vos options colonnes
         afficher_entete(opt_u,
-                        opt_f);
+                        opt_f,
+                        opt_Z,
+                        opt_s);
 
         for (int i = 0; i < nb; i++) {
             afficher_ligne(&procs[i],
                            opt_u,
                            opt_f,
-                           opt_c);
+                           opt_c,
+                           opt_Z,
+                           opt_s);
         }
     }
 
