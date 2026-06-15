@@ -177,4 +177,78 @@ void afficher_ligne(Processus *p, int opt_u) {
                p->pid, p->nom, p->etat, p->ppid, mem_kb, p->cpu, p->cmdline);
     }
 }
+/* ---------- Analyse manuelle des options (remplace getopt) ---------- */
+int parse_ps_args(int argc, char **argv,
+                  int *opt_a, int *opt_u, int *opt_x, int *pid_filtre)
+{
+    int i = 1;
+    *opt_a = 0;
+    *opt_u = 0;
+    *opt_x = 0;
+    *pid_filtre = 0;
+
+    while (i < argc)
+    {
+        char *arg = argv[i];
+        if (arg[0] != '-')
+        {
+            fprintf(stderr, "Erreur: argument inattendu '%s' (les options commencent par -)\n", arg);
+            return 0;
+        }
+
+        /* Gestion des options groupées (ex: -aux) */
+        if (strlen(arg) > 2)
+        {
+            for (int j = 1; arg[j] != '\0'; j++)
+            {
+                char c = arg[j];
+                switch (c)
+                {
+                    case 'a': *opt_a = 1; break;
+                    case 'u': *opt_u = 1; break;
+                    case 'x': *opt_x = 1; break;
+                    default:
+                        fprintf(stderr, "Erreur: option inconnue '-%c' dans le groupe\n", c);
+                        return 0;
+                }
+            }
+            i++;
+            continue;
+        }
+
+        /* Option simple (un seul caractère après '-') */
+        char opt = arg[1];
+        switch (opt)
+        {
+            case 'a':
+                *opt_a = 1;
+                break;
+            case 'u':
+                *opt_u = 1;
+                break;
+            case 'x':
+                *opt_x = 1;
+                break;
+            case 'p':
+                if (i + 1 >= argc)
+                {
+                    fprintf(stderr, "Erreur: l'option -p nécessite un argument (PID)\n");
+                    return 0;
+                }
+                *pid_filtre = atoi(argv[i + 1]);
+                if (*pid_filtre <= 0)
+                {
+                    fprintf(stderr, "Erreur: PID invalide '%s'\n", argv[i + 1]);
+                    return 0;
+                }
+                i++; /* consomme l'argument */
+                break;
+            default:
+                fprintf(stderr, "Erreur: option inconnue '-%c'\n", opt);
+                return 0;
+        }
+        i++;
+    }
+    return 1;
+}
 
