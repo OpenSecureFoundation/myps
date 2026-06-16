@@ -28,15 +28,7 @@
  *   --sort=CLE  : trier selon pid|ppid|cpu|rss|vsz|nom|uid
  *   --headers   : repeter les en-tetes toutes les N lignes
  *
- * Corrections appliquees :
- *   [FIX1]  --forest : affiche les colonnes du format courant, arbre dans CMD
- *   [FIX2]  --forest/-H : charge tous les procs pour l'arbre, filtre a l'affichage
- *   [FIX3]  CMD : troncature basee sur la largeur reelle du terminal (ioctl)
- *   [FIX4]  -p PID : court-circuite le filtre UID (affiche quel que soit le proprio)
- *   [FIX5]  -G GID : court-circuite le filtre UID (comme -p et -U)
- *   [FIX6]  -F : suppression de NLWP, en-tete UID (pas USER), ordre conforme
- *   [FIX7]  -v : colonnes completes (PID TTY STAT TIME MAJFL MINFL %CPU %MEM VSZ RSS CMD)
- *   [FIX8]  -L : suppression de NLWP et TGID de l'en-tete de base (PID LWP TTY TIME CMD)
+
  *
  * Compilation : gcc -Wall -O2 -o myps myps.c
  */
@@ -164,11 +156,7 @@ int est_un_nombre(const char *s) {
     return 1;
 }
 
-/* [FIX3] Retourne la largeur utile de la colonne CMD selon la largeur du terminal.
- * Soustrait les colonnes fixes deja affichees (offset) pour que la ligne
- * tienne dans la largeur du terminal.
- * Si le terminal n'est pas detectable, retourne CMD_LARGEUR_DEFAUT.
- */
+
 int largeur_cmd(int offset_colonnes) {
     struct winsize ws;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
@@ -432,14 +420,7 @@ int lister_threads(int pid, int **tids) {
    FILTRAGE
    ====================================================== */
 
-/*
- * [FIX4][FIX5] Ordre de priorite des filtres :
- *  1. -p PID    : affiche le processus quel que soit l'utilisateur ou le GID
- *  2. -U USER   : filtre par UID reel, independamment de l'utilisateur courant
- *  3. -G GID    : filtre par GID reel, independamment de l'utilisateur courant
- *  4. -a/-x     : filtres habituels (utilisateur courant, terminal)
- *  5. -t/-n/-C  : filtres supplementaires
- */
+
 int doit_afficher(Processus *p,
                   int opt_a, int opt_x, int opt_A,
                   int pid_filtre, int uid_courant,
@@ -499,16 +480,7 @@ int comparer_processus(const void *a, const void *b) {
 /* ======================================================
    CONSTRUCTION DE L'ARBRE (-H et --forest)
    ======================================================
- *
- * [FIX1][FIX2] Principe :
- *   - On charge TOUS les processus dans le tableau procs (filtre desactive).
- *   - On marque les processus "a afficher" selon les filtres reels.
- *   - On construit le prefixe d'arbre (arbre_prefix) de chaque processus.
- *   - On affiche ensuite chaque processus marque avec le format courant,
- *     en injectant arbre_prefix devant la colonne CMD.
- *
- * Le flag doit_afficher_arbre indique si ce proc sera affiche ou non.
- */
+ 
 
 /* Remplit arbre_prefix pour chaque processus selon son niveau dans l'arbre.
  * Style -H  : "    \\_ " (indentation simple)
@@ -539,24 +511,11 @@ void construire_arbre(Processus *procs, int nb, int parent, int niveau, int fore
 /* ======================================================
    EN-TETES (conformes aux en-tetes reels de ps GNU)
    ======================================================
- *
- * Colonnes par format (verification sur ps procps-ng) :
- *
- *  defaut   : PID  TTY          TIME CMD
- *  -f       : UID        PID  PPID  C STIME TTY          TIME CMD
- *  -F [FIX6]: UID        PID  PPID  C    SZ  RSS PSR STIME TTY       TIME CMD
- *  -u       : USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
- *  -l       : F S   UID   PID  PPID  C PRI  NI    SZ   RSS TTY      TIME CMD
- *  -j       : PID  PGID   SID TTY          TIME CMD
- *  -L [FIX8]: PID   LWP TTY          TIME CMD
- *  -v [FIX7]: PID TTY      STAT   TIME  MAJFL  MINFL %CPU %MEM    VSZ   RSS COMMAND
- *  -Z       : prefixe LABEL devant le format choisi
- *  -s       : prefixe PGID SID devant le format choisi
+
  */
 void afficher_entete(int opt_u, int opt_f, int opt_F, int opt_l,
                      int opt_v, int opt_j, int opt_L,
                      int opt_Z, int opt_s) {
-    /* [FIX8] -L : PID LWP TTY TIME CMD (sans NLWP ni TGID en mode de base) */
     if (opt_L) {
         printf("%-*s %-*s %-*s %-*s %s\n",
                W_PID,  "PID",
@@ -599,7 +558,6 @@ void afficher_entete(int opt_u, int opt_f, int opt_F, int opt_l,
                "CMD");
         return;
     }
-    /* [FIX6] -F : UID PID PPID C SZ RSS PSR STIME TTY TIME CMD (sans NLWP) */
     if (opt_F) {
         if (opt_Z) printf("%-*s ", W_LABEL, "LABEL");
         if (opt_s) printf("%-*s %-*s ", W_PGID, "PGID", W_SID, "SID");
@@ -650,7 +608,6 @@ void afficher_entete(int opt_u, int opt_f, int opt_F, int opt_l,
                "COMMAND");
         return;
     }
-    /* [FIX7] -v : PID TTY STAT TIME MAJFL MINFL %CPU %MEM VSZ RSS COMMAND */
     if (opt_v) {
         if (opt_Z) printf("%-*s ", W_LABEL, "LABEL");
         if (opt_s) printf("%-*s %-*s ", W_PGID, "PGID", W_SID, "SID");
@@ -700,14 +657,6 @@ void lire_mem_total(void) {
 /* ======================================================
    AFFICHAGE D'UNE LIGNE
    ======================================================
- *
- * [FIX3] La colonne CMD est tronquee a largeur_cmd(offset) caracteres,
- *        ou offset est la somme des largeurs de toutes les colonnes fixes
- *        deja affichees sur cette ligne (espaces compris).
- *        Avec -w, aucune troncature.
- *
- * [FIX1] Le prefixe d'arbre (arbre_prefix) est prepend a CMD quand
- *        --forest ou -H est actif. Il est stocke dans p->arbre_prefix.
  */
 void afficher_ligne(Processus *p,
                     int opt_u, int opt_f, int opt_F, int opt_l,
@@ -749,7 +698,6 @@ void afficher_ligne(Processus *p,
     if (p->pgid == p->sid) stat_str[pos++] = '+';  /* foreground (approx) */
     stat_str[pos] = '\0';
 
-    /* [FIX3] Calcul de l'offset fixe et troncature CMD */
     int offset;
     char cmd_buf[CMD_MAX];
 
@@ -766,7 +714,6 @@ void afficher_ligne(Processus *p,
     } \
 } while(0)
 
-    /* [FIX8] -L : PID LWP TTY TIME CMD */
     if (opt_L) {
         /* offset = W_PID+1 + W_LWP+1 + W_TTY+1 + W_TIME+1 */
         TRONQUER_CMD((W_PID+1) + (W_LWP+1) + (W_TTY+1) + (W_TIME+1));
@@ -820,7 +767,6 @@ void afficher_ligne(Processus *p,
         return;
     }
 
-    /* [FIX6] -F : UID PID PPID C SZ RSS PSR STIME TTY TIME CMD */
     if (opt_F) {
         int pref = (opt_Z ? W_LABEL+1 : 0) + (opt_s ? (W_PGID+1)+(W_SID+1) : 0);
         TRONQUER_CMD(pref + (W_USER+1) + (W_PID+1) + (W_PPID+1) + (W_C+1)
@@ -885,7 +831,6 @@ void afficher_ligne(Processus *p,
         return;
     }
 
-    /* [FIX7] -v : PID TTY STAT TIME MAJFL MINFL %CPU %MEM VSZ RSS COMMAND */
     if (opt_v) {
         int pref = (opt_Z ? W_LABEL+1 : 0) + (opt_s ? (W_PGID+1)+(W_SID+1) : 0);
         TRONQUER_CMD(pref + (W_PID+1) + (W_TTY+1) + (W_STAT+1) + (W_TIME+1)
