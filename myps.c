@@ -1,6 +1,6 @@
 /**
  * myps.c - Implémentation de la commande ps sous Linux
- *
+ * 
  * Options :
  *   -a        : afficher les processus de tous les utilisateurs
  *   -u        : afficher le nom d'utilisateur (et format étendu)
@@ -9,7 +9,7 @@
  *   -f        : affichage complet (colonnes supplémentaires)
  *   -c        : afficher le nom de commande (comm) au lieu de la ligne complète
  *   -H        : affichage hiérarchique (arbre des processus)
- *   -p PID    : n’afficher que le processus de PID donné
+ *   -p PID    : n'afficher que le processus de PID donné
  *   -t tty    : filtrer par terminal (ex: pts/0)
  *   -n nom    : filtrer par nom de processus (sous-chaîne)
  *   -Z        : afficher le contexte de sécurité SELinux
@@ -19,8 +19,10 @@
  *   -G GID    : filtrer par groupe réel (RGID)
  *   -j        : format "jobs" (PGID, SID, TTY, TIME)
  *   -L        : afficher les threads (avec TID, NLWP)
- *
-
+ *   -q PID    : sélection rapide par PID (Membre 4)
+ *   -l        : format long (Membre 4)
+ *   -y        : avec -l, remplace ADDR par RSS en Ko (Membre 4)
+ *   -w        : mode large, pas de troncature CMD (Membre 4)
  */
 
 #include <stdio.h>
@@ -56,6 +58,13 @@ typedef struct {
     // Pour l'option -L (threads)
     int tgid;               // Thread group ID (PID du processus principal)
     int nlwp;               // Nombre de threads du processus (NLWP)
+    // Pour l'option -l (Membre 4)
+    long utime;             // Ticks CPU utilisateur
+    long stime;             // Ticks CPU système
+    int priority;           // Priorité
+    int nice;               // Valeur nice
+    long vsize;             // Mémoire virtuelle (octets)
+    long starttime;         // Démarrage en ticks depuis le boot
 } Processus;
 
 // Variable globale pour le critère de tri (utilisée par qsort)
@@ -121,27 +130,35 @@ int lire_stat(int pid, Processus *proc) {
 
     int pid_lu, ppid, pgrp, session, tty_nr;
     char nom[256], etat;
-    long rss, utime, stime, starttime;
-    long dummy; // pour les champs ignorés
+    long rss, utime, stime, starttime, vsize;
+    int priority, nice;
+    long dummy;
 
     int n = fscanf(f,
         "%d %255s %c %d %d %d %d "
         "%ld %ld %ld %ld %ld %ld %ld "
-        "%ld %ld %ld %ld %ld %ld %ld "
+        "%ld %ld %d %d %ld %ld %ld "
         "%ld %ld %ld %ld %ld",
         &pid_lu, nom, &etat, &ppid, &pgrp, &session, &tty_nr,
         &dummy, &dummy, &dummy, &dummy, &dummy, &dummy, &dummy,
-        &utime, &stime, &dummy, &dummy, &dummy, &dummy, &dummy,
-        &starttime, &dummy, &dummy, &dummy, &rss);
+        &utime, &stime, &priority, &nice, &dummy, &dummy, &dummy,
+        &starttime, &vsize, &dummy, &dummy, &rss);
     fclose(f);
     if (n < 24) return 0;
 
-    proc->pid = pid_lu;
-    proc->ppid = ppid;
-    proc->etat = etat;
-    proc->rss = rss;
-    proc->pgid = pgrp;
-    proc->sid = session;
+    proc->pid       = pid_lu;
+    proc->ppid      = ppid;
+    proc->etat      = etat;
+    proc->rss       = rss;
+    proc->pgid      = pgrp;
+    proc->sid       = session;
+    // Champs Membre 4
+    proc->utime     = utime;
+    proc->stime     = stime;
+    proc->priority  = priority;
+    proc->nice      = nice;
+    proc->vsize     = vsize;
+    proc->starttime = starttime;
 
     // Nettoyage du nom (enlever les parenthèses)
     int len = strlen(nom);
@@ -368,6 +385,86 @@ void afficher_ligne(Processus *p, int opt_u, int opt_f, int opt_c,
     printf("%-8d %-8s %-10s %s\n", p->pid, p->tty, temps, cmd_trunc);
 }
 
+/* ============================================================
+ * MEMBRE 4 : fonctions ajoutées sans modifier l'existant
+ * Options : -q PID, -l, -y, -w
+ * ============================================================ */
+
+/* Lit /proc/PID/wchan : nom de la fonction noyau où le processus dort */
+void lire_wchan(int pid, char *buf, size_t taille) {
+    char chemin[256];
+    snprintf(chemin, sizeof(chemin), "/proc/%d/wchan", pid);
+    FILE *f = fopen(chemin, "r");
+    if (!f) { snprintf(buf, taille, "-"); return; }
+    if (!fgets(buf, taille, f) || buf[0] == '\0' || buf[0] == '\n')
+        snprintf(buf, taille, "-");
+    else {
+        size_t len = strlen(buf);
+        if (len > 0 && buf[len-1] == '\n') buf[len-1] = '\0';
+    }
+    fclose(f);
+}
+
+/* En-tête pour -l et -l -y */
+void afficher_entete_long(int opt_y) {
+    const char *col6 = opt_y ? "RSS(KB)" : "ADDR";
+    printf("%-3s %-6s %-6s %-6s %-4s %-4s %-8s %-8s %-14s %-5s %-8s %-8s %s\n",
+           "F", "UID", "PID", "PPID", "PRI", "NI",
+           "VSZ(KB)", col6, "WCHAN", "STAT", "TTY", "TIME", "CMD");
+    printf("%-3s %-6s %-6s %-6s %-4s %-4s %-8s %-8s %-14s %-5s %-8s %-8s %s\n",
+           "---", "---", "---", "----", "---", "--",
+           "-------", "-------", "-------------", "----", "---", "----", "---");
+}
+
+/*
+ * Affichage d'une ligne en format long (-l)
+ * -y : remplace ADDR (inaccessible en user-space) par RSS en Ko
+ * -w : désactive la troncature de la commande
+ * -c : nom court au lieu de la ligne complète (compatible avec -l)
+ */
+void afficher_ligne_long(Processus *p, int opt_y, int opt_w, int opt_c) {
+    long hz      = HZ;
+    long total_s = (p->utime + p->stime) / hz;
+    int  min     = (int)(total_s / 60);
+    int  sec     = (int)(total_s % 60);
+    long vsz_kb  = p->vsize / 1024;
+    long rss_kb  = p->rss * 4;
+    int  flags   = 1; /* valeur standard pour un processus utilisateur */
+
+    char wchan[32];
+    lire_wchan(p->pid, wchan, sizeof(wchan));
+
+    /* Colonne variable : ADDR non dispo en user-space, ou RSS si -y */
+    char col6[16];
+    if (opt_y)
+        snprintf(col6, sizeof(col6), "%-8ld", rss_kb);
+    else
+        snprintf(col6, sizeof(col6), "%-8s", "-");
+
+    /* Commande : -c = nom court, sinon ligne complète ; -w = pas de troncature */
+    const char *src = opt_c ? p->nom : p->cmdline;
+    char cmd[512];
+    if (opt_w)
+        snprintf(cmd, sizeof(cmd), "%s", src);
+    else {
+        strncpy(cmd, src, 60);
+        cmd[60] = '\0';
+    }
+
+    char temps[16];
+    snprintf(temps, sizeof(temps), "%d:%02d", min, sec);
+
+    printf("%-3d %-6d %-6d %-6d %-4d %-4d %-8ld %-8s %-14s %-5c %-8s %-8s %s\n",
+           flags, p->uid, p->pid, p->ppid,
+           p->priority, p->nice,
+           vsz_kb, col6, wchan, p->etat,
+           p->tty, temps, cmd);
+}
+
+/* ============================================================
+ * FIN MEMBRE 4
+ * ============================================================ */
+
 /* ---------- Analyse des options (sans getopt, mais complet) ---------- */
 int parse_args(int argc, char **argv,
                int *opt_a, int *opt_u, int *opt_x, int *opt_e,
@@ -375,9 +472,11 @@ int parse_args(int argc, char **argv,
                int *pid_filtre, int *opt_Z, int *opt_s,
                char **tty_filtre, char **nom_filtre, char **sort_critere,
                char **nom_exact, int *gid_filtre,
-               int *opt_j, int *opt_L) {
-    // Initialisation
-    *opt_a = *opt_u = *opt_x = *opt_e = *opt_f = *opt_c = *opt_H = 0;
+               int *opt_j, int *opt_L,
+               int *pid_filtre_q, int *opt_l, int *opt_y, int *opt_w) {
+    // Initialisation options existantes
+    *opt_a = *opt_u = *opt_e = *opt_f = *opt_c = *opt_H = 0;
+    *opt_x = 1; /* inclure processus sans terminal par défaut */
     *opt_Z = *opt_s = *opt_j = *opt_L = 0;
     *pid_filtre = 0;
     *tty_filtre = NULL;
@@ -385,6 +484,9 @@ int parse_args(int argc, char **argv,
     *nom_exact = NULL;
     *sort_critere = NULL;
     *gid_filtre = -1;
+    // Initialisation options Membre 4
+    *pid_filtre_q = 0;
+    *opt_l = *opt_y = *opt_w = 0;
 
     for (int i = 1; i < argc; i++) {
         char *arg = argv[i];
@@ -398,7 +500,7 @@ int parse_args(int argc, char **argv,
             fprintf(stderr, "Argument invalide : %s\n", arg);
             return 0;
         }
-        // Options avec argument
+        // Options avec argument (existantes)
         if (strcmp(arg, "-p") == 0) {
             if (++i >= argc) return 0;
             *pid_filtre = atoi(argv[i]);
@@ -426,10 +528,18 @@ int parse_args(int argc, char **argv,
             if (*gid_filtre < 0) return 0;
             continue;
         }
+        // Option avec argument Membre 4 : -q PID
+        if (strcmp(arg, "-q") == 0) {
+            if (++i >= argc) { fprintf(stderr, "Erreur: -q requiert un PID\n"); return 0; }
+            *pid_filtre_q = atoi(argv[i]);
+            if (*pid_filtre_q <= 0) { fprintf(stderr, "Erreur: PID invalide pour -q\n"); return 0; }
+            continue;
+        }
         // Options sans argument (groupées possibles)
         for (int j = 1; arg[j]; j++) {
             char c = arg[j];
             switch (c) {
+                // Options existantes — inchangées
                 case 'a': *opt_a = 1; break;
                 case 'u': *opt_u = 1; break;
                 case 'x': *opt_x = 1; break;
@@ -441,12 +551,18 @@ int parse_args(int argc, char **argv,
                 case 's': *opt_s = 1; break;
                 case 'j': *opt_j = 1; break;
                 case 'L': *opt_L = 1; break;
+                // Options Membre 4
+                case 'l': *opt_l = 1; break;
+                case 'y': *opt_y = 1; break;
+                case 'w': *opt_w = 1; break;
                 default:
                     fprintf(stderr, "Option inconnue : -%c\n", c);
                     return 0;
             }
         }
     }
+    if (*opt_y && !*opt_l)
+        fprintf(stderr, "Avertissement: -y n'a d'effet qu'avec -l\n");
     return 1;
 }
 
@@ -482,6 +598,8 @@ int main(int argc, char **argv) {
     char *tty_filtre = NULL, *nom_filtre = NULL, *sort_critere = NULL;
     char *nom_exact = NULL;
     int gid_filtre = -1;
+    // Variables Membre 4
+    int pid_filtre_q = 0, opt_l = 0, opt_y = 0, opt_w = 0;
 
     if (!parse_args(argc, argv,
                     &opt_a, &opt_u, &opt_x, &opt_e,
@@ -489,8 +607,13 @@ int main(int argc, char **argv) {
                     &pid_filtre, &opt_Z, &opt_s,
                     &tty_filtre, &nom_filtre, &sort_critere,
                     &nom_exact, &gid_filtre,
-                    &opt_j, &opt_L))
+                    &opt_j, &opt_L,
+                    &pid_filtre_q, &opt_l, &opt_y, &opt_w))
         return 1;
+
+    /* -q : fusionne avec pid_filtre pour réutiliser doit_afficher() sans le modifier */
+    if (pid_filtre_q != 0)
+        pid_filtre = pid_filtre_q;
 
     DIR *proc_dir = opendir("/proc");
     if (!proc_dir) { perror("/proc"); return 1; }
@@ -565,6 +688,11 @@ int main(int argc, char **argv) {
     if (opt_H && !opt_L) {
         printf("ARBRE DES PROCESSUS\n");
         afficher_arbre(procs, nb_procs, 1, 0);
+    } else if (opt_l) {
+        /* Format long Membre 4 : -l [-y] [-w] [-c] */
+        afficher_entete_long(opt_y);
+        for (int i = 0; i < nb_procs; i++)
+            afficher_ligne_long(&procs[i], opt_y, opt_w, opt_c);
     } else {
         afficher_entete(opt_u, opt_f, opt_Z, opt_s, opt_j, opt_L);
         for (int i = 0; i < nb_procs; i++) {
